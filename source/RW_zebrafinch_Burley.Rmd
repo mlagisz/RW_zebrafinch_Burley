@@ -1,0 +1,725 @@
+---
+title: "RW_zebrafinch_Burley"
+author: "ML"
+date: "23/12/2019"
+output: html_document
+output:
+  html_document:
+    code_download: true
+    code_folding: hide
+    depth: 4
+    number_sections: no
+    theme:  cosmo # “default”, “cerulean”, “journal”, “flatly”, “darkly”, “readable”, “spacelab”, “united”, “cosmo”, “lumen”, “paper”, “sandstone”, “simplex”, “yeti”
+    toc: yes
+    toc_float: yes
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+subtitle: Electronic Supplementary Material - literature survey
+#bibliography: references.bib
+#biblio-style: "apalike"
+#csl: nature.csl
+link-citations: yes
+---
+
+## Setup
+Knitter settings, loading packages and custom functions.   
+
+```{r setup, eval = TRUE}
+#kniter seetting
+knitr::opts_chunk$set(
+message = FALSE,
+warning = FALSE, # no warnings
+cache = TRUE,# Cacheing to save time when kniting
+tidy = TRUE, 
+echo = TRUE
+#fig.width = 9
+)
+
+# cleaning up
+rm(list=ls())
+
+#load packages
+pacman::p_load(tidyverse, # tidy family and related pacakges below
+               readxl, #read Excel files
+               bibliometrix, #bibliometric analyses
+               kableExtra, # add features to a kable() output 
+               ggplot2,
+               ggrepel,
+               #gridExtra, # may not use this
+               purrr,    #functional programming tools
+               magrittr, # extending piping
+               pander,   # nice tables
+               #ggbeeswarm, # making bee-swarm plots possible
+               plotly,     # interactive plots using ggplot2
+               png,         # reading png files
+               revtools, #syste rev tools
+               #grid,        # graphic layout manipulation
+               formatR # provides a function tidy_source() to format R source automatically
+               #nVennR, # Venn diagrams https://cran.r-project.org/web/packages/nVennR/vignettes/nVennR.html
+               #rsvg, #displaying svg plots from nVennR
+               #grImport2 #displaying svg plots from nVennR
+)
+```
+
+## Aims   
+To visualise the impact of publications Burley 1981 and Burley 1982 on academic literature:   
+ 1. showing highly cited papers and papers in high IF journals that cite works by Burley
+ 2. among these, which ones ae follow-up studies on the effects of colored bands on preference or reproduction in birds
+
+### Literature (initial data set)    
+We downloaded full bibliographic records of 201 papers citing Burley 1981 and 233 citing Burley 1982 from Scopus platform (as on 2019/12/22). The records were automatically deduplcated on Scopus platform, resulting in 401 unique records (including records for Burley 1981 and Burley 1982). The equivalent numbers were 201, 260 and 386 (unique) records when we used Web of Knowledge platform. We decided to use Scopus records, due to the higher total number of unique citing papers.   
+
+#### Upload initial Scopus data set   
+The records are stored in zebrafinch_Scopus.bib file - first we use bibliometrix and revtools function to load these into a data frame. Then, merge this data frame with the journal citation records.  
+
+```{r load data, eval = TRUE}
+### 1 Load bib file with records from Scopus (2019/12/23) into bibliometrix package to create data frame for anlayses:
+tmp <- readFiles("./data/zebrafinch_Scopus.bib")
+# Convert to a bibliometric data frame
+bib <- convert2df(tmp, dbsource = "scopus", format = "bib")
+rm(tmp)
+#str(bib)
+#dim(bib) #402 - ok
+#length(unique(bib$TI)) #401
+#which(bib$TI == bib$TI[duplicated(bib$TI)]) #rows 101 and 105 are duplicated
+#rownames(bib[c(101, 105),]) #same paper, different formatting, remove one with rownames=="TTH A, 2010, ARCH TIERZ"
+bib$longID <- rownames(bib) #add column with long paper ID made from rownames
+bib <- bib %>% filter(longID != "TTH A, 2010, ARCH TIER") #remove one of the duplicates
+#fix wrong journal name for Burley 1981
+bib %>% filter(TI != "TTH A, 2010, ARCH TIER") #remove one of the duplicates
+#paper by Burley 1981 has wrong journal (SO):bib %>% filter(bib$AU %in% grep("BURLEY", bib$AU, value=TRUE) & PY==1981) #Burley 1981 record - wrong journal (SO)
+bib <- bib %>% mutate(SO=replace(SO, TI=="SEX RATIO MANIPULATION AND SELECTION FOR ATTRACTIVENESS", "SCIENCE")) 
+bib <- bib %>% mutate(longID=replace(longID, TI=="SEX RATIO MANIPULATION AND SELECTION FOR ATTRACTIVENESS", "BURLEY N, 1981, SCIENCE")) 
+
+### 2. Load same bib file into revtools creating differentky formatted dat frame (will be used for manual screening/labeling):
+revdata <- read_bibliography("./data/zebrafinch_Scopus.bib")
+#names(revdata)
+#revdatanew$label
+#length(unique(revdata$title)) #401
+#which(duplicated(revdata$title)) #row 105
+which(revdata$title == revdata$title[duplicated(revdata$title)]) #rows 101 and 105
+#revdata[c(101, 105),] # same paper, different formatting, remove one with label==Tth2010328.1
+revdata <- revdata %>% filter(label != "Tth2010328.1") #remove one of the duplicates
+revdata$title <- gsub("  ", " ", revdata$title) #remove double space from one of the titles
+revdata %>% filter(revdata$author %in% grep("Burley", revdata$author, value=TRUE) & year==1981) #Burley 1981 record - wrong journal (SO)
+revdata <- revdata %>% mutate(journal=replace(journal, title=="Sex ratio manipulation and selection for attractiveness", "Science")) 
+
+#compare data frame created in revtools with data frame created in bibliometrix
+#length(intersect(tolower(revdata$title), tolower(bib$TI))) #401 - all matching titles (at lower case)
+#setdiff(tolower(revdata$title), tolower(bib$TI)) #0 mismatches
+#setdiff(tolower(bib$TI), tolower(revdata$title)) #0 mismatches
+
+#write.csv(revdata, "Scopus_bib_as_df.csv", row.names = FALSE) #sve as Rdat, as csv messes up rows!
+```
+
+#### incorporate journals IF   
+Adding data with Journal Impact Factors (InCite Journal Citation Reports:  Selected JCR Year: 2018 Selected Editions: SCIE,SSCI Selected Category Scheme: WoS).   
+
+```{r journals, eval = TRUE}
+#load journal data
+journals_data <- read_excel("./data/JournalHomeGrid.xlsx", na = "NA", skip = 2, col_types = c("numeric", "text", "numeric", "skip", "numeric", "numeric")) %>% mutate_if(is.character, as.factor)
+#names(journals_data)
+#remove unnecessary columns and rename the other
+#journals_data <- journals_data  %>% select(-"...4")
+journals_data <- journals_data  %>% rename(Journal_Name = "Full Journal Title", 
+                       Total_Cites = "Total Cites",
+                       JIF = "Journal Impact Factor",
+                       Eigenfactor_Score = "Eigenfactor Score"
+                       )
+journals_data <- mutate(journals_data, Journal_Name_lower = tolower(Journal_Name))
+#check journal names
+journals <- bib$SO #402
+journals_list <- unique(tolower(journals)) #130
+#intersect(journals_list, journals_data$Journal_Name_lower) #85
+#setdiff(journals_list, journals_data$Journal_Name_lower) #45 unmatched, many books
+#fix journal names (Scopus = JCR):
+journals_data$Journal_Name_lower[grepl("ethology", journals_data$Journal_Name_lower)]
+journals_data$Journal_Name_lower <- gsub("proceedings of the royal society b-biological sciences", "proceedings of the royal society b: biological sciences", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("philosophical transactions of the royal society b-biological sciences", "philosophical transactions of the royal society b: biological sciences", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("trends in ecology & evolution", "trends in ecology & evolution"
+, journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("annual review of ecology evolution and systematics", "annual review of ecology and systematics", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("ethology ecology & evolution", "ethology ecology and evolution", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("emu-austral ornithology", "emu", journals_data$Journal_Name_lower, ignore.case = TRUE)
+
+#marge journal info into bib2 dataframe
+bib2 <- mutate(bib, Journal_Name_lower = tolower(SO))
+bib2 <- left_join(bib2, journals_data, by = "Journal_Name_lower")
+#str(bib2)
+#dim(bib2) #437 - note some records were joined incorrectly (some duplicated data rows)!
+bib2 <- distinct(bib2, .keep_all = TRUE)
+#dim(bib2) #402
+bib2 <- bib2 %>% filter(longID != "TTH A, 2010, ARCH TIER") #remove one of the duplicates
+#write.csv(bib2, "./data/Scopus_bib_as_df.csv", row.names = FALSE)
+rm(journals_data) #clean up
+```
+
+#### Data clean-up: author names   
+
+Note: Burley appears both as "BURLEY N" and "BURLEY NT"! (similar issue for some other outhors)   
+```{r authors, eval = TRUE}
+#check author names as strings
+authors <- bib2$AU #402 
+
+#extract individual authors of citing papers into a vector of names
+authors2 <- unlist(strsplit(authors, ";")) #these are authors in the reference lists!
+authors2 <- unique(authors2[order(authors2)])
+#View(test2) #see which names need cleaning
+#write.csv(authors2, "./data/author_list_uncleaned.csv", row.names = FALSE)
+
+#grep("BURLEY", authors2, value=TRUE) #3 forms - needs fixing
+
+# We can do some cleaning where we suspect a mistake (especially author initials)
+corrected <- paste(bib2$AU, ";", sep="")
+corrected <- gsub("BURLEY N;", "BURLEY NT;", corrected, ignore.case = TRUE)
+corrected <- gsub("BURLEY DN;", "BURLEY NT;", corrected, ignore.case = TRUE)
+corrected <- gsub("CASPERS B;", "CASPERS BA;", corrected, ignore.case = TRUE)
+corrected <- gsub("CLUTTONBROCK TH;", "CLUTTON BROCK TH;", corrected, ignore.case = TRUE)
+corrected <- gsub("CUTHILL I;", "CUTHILL IC;", corrected, ignore.case = TRUE)
+corrected <- gsub("CICHO M;", "CICHON M;", corrected, ignore.case = TRUE)
+corrected <- gsub("TINBERGEN J;", "TINBERGEN JM;", corrected, ignore.case = TRUE)
+bib2$AU <- corrected #add corrections
+
+#save as a data frame
+#write.csv(bib2, "Scopus_bib_as_df.csv", row.names = FALSE) #sve as Rdat, as csv messes up rows!
+```
+
+**Extended Data Table 1:**   
+List of 401 bibliographic records used in the analyses (including Burley 1981 and Burley 1982).    
+
+```{r scrollable table of 402 papers, include = FALSE, eval = FALSE}
+bib2 %>% select(AU, PY, TI, SO, VL, PP, DT) %>% kable("html") %>%
+    kable_styling("striped", position = "left") %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+
+#### Coding contents of papers using Revtools    
+Revtools has a screening tool which can be also used for adding lebels to records.   
+Manually screened records to mark these on birds and coloured ring preference/reproductionas (labelled as "included", with additional marks for zebrafinch "ZF" and other birds "OB").     
+
+```{r screen and label in revtools, eval = FALSE}
+scr_tit_res <- screen_titles(revdata) # run revtools app with titles only
+names(scr_tit_res)
+table(scr_tit_res$screened_titles) #62 not excluded
+scr_abs <- scr_tit_res %>% filter(screened_titles != "excluded") #filter out 62 abstracts that are not excluded for further screening
+scr_abs_res <- screen_abstracts(scr_abs) # run revtools app with abstracts
+names(scr_abs_res)
+table(scr_abs_res$screened_abstracts) #32 selected
+scr_abs_lab <- scr_abs_res %>% filter(screened_abstracts != "excluded") #filter out 32 abstracts that are not excluded for manual labeling
+names(scr_abs_lab)
+dim(scr_abs_lab)
+scr_abs_lab %>% grepl("zebrafinch", title)
+scr_abs_lab2 <- revdata %>% filter(revdata$title %in% scr_abs_lab$title) #  RE-FILTER THESE RECORDS FROM THE ORIGINAL DATASEST (REVTOOLS DOES NOT WONT TO RUN AGAIN OTHERWISE)
+dim(scr_abs_lab2)
+scr_abs_lab_res <- screen_abstracts(scr_abs_lab2) # run revtools app with abstracts again to add labels (ZF, OB)
+dim(scr_abs_lab_res) #also saved to a file SCR_ABS_LAB_RES.csv
+```
+
+```{r add screening labels from revtools, eval = TRUE}
+scr_abs_lab_res <- read.csv("./data/SCR_ABS_LAB_RES.csv")
+#names(scr_abs_lab_res)
+#table(scr_abs_lab_res$notes) #OB 10, ZF 22
+bib2 <- bib2 %>% mutate(ring = ifelse(tolower(bib2$TI) %in% tolower(scr_abs_lab_res$title), "yes", "no")) 
+#table(bib2$ring)
+```
+
+
+#### Initial plots   
+
+See: http://r-statistics.co/Complete-Ggplot2-Tutorial-Part2-Customizing-Theme-With-R-Code.html#Annotation    
+
+```{r initial plot by year and IF, eval = FALSE}
+#scale points by TC (total citations)
+table(is.na(bib2$JIF)) #46 missing - probably for book chapters etc. - remove?
+  
+ggplot(bib2, aes(x = PY, y = JIF, size = TC, alpha = 0.1)) + 
+  geom_point(col = "grey") + 
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Total Citations")) + 
+  labs(title="Impact", x="Publication Year", y="Journal Impact Factor", caption="Source: Scopus")
+```
+
+```{r plot by year and TC, eval = FALSE}
+#scale points by JIF (Journal Impact Facto)
+ggplot(bib2, aes(x=PY, y=TC, size=JIF, alpha=0.1)) + 
+  geom_point(col = "grey") +
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Journal Impact Factor")) + 
+  labs(title="Impact", x="Publication Year", y="Total Citations", caption="Source: Scopus")
+```
+
+With original and follow-up birs ring preference studies in blue:
+
+```{r plot by year and IF ring, eval = FALSE}
+#table(is.na(bib2$JIF)) #46 missing - probably for book chapters etc. - remove?
+#scale points by TC (total citations)
+ggplot(bib2, aes(x = PY, y = JIF, size = TC, alpha = 0.1)) + 
+  geom_point(aes(col=ring)) + 
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Total Citations")) + 
+  labs(title="Impact", x="Publication Year", y="Journal Impact Factor", caption="Source: Scopus")
+```
+
+```{r plot by year and TC ring, eval = TRUE}
+#scale points by JIF (Journal Impact Facto)
+ggplot(bib2, aes(x=PY, y=TC, size=JIF, alpha=0.1)) + 
+  geom_point(aes(col=ring)) +
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Journal Impact Factor")) + 
+  labs(title="Impact", x="Publication Year", y="Total Citations", caption="Source: Scopus")
+```
+
+With original and follow-up birds ring preference studies in blue and labels:
+
+```{r plot by year and IF ring labels, eval = FALSE}
+# Scale points by TC (total citations)
+
+# table(is.na(bib2$JIF)) #46 missing - probably for book chapters etc. - remove:
+bib3 <- bib2 %>% filter(!is.na(bib2$JIF))
+
+# Filter required rows
+bib3_sub1 <- bib3 %>% filter(ring == "yes" | JIF > 20, )
+
+# Basic plot
+gg <- ggplot(bib3, aes(x = PY, y = JIF, size = TC, alpha = 0.1)) + 
+  geom_point(aes(col=ring)) + 
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Total Citations")) + 
+  labs(title="Impact", x="Publication Year", y="Journal Impact Factor", caption="Source: Scopus")
+
+# # Plot text and label ------------------------------------------------------
+# gg + geom_text(aes(label=longID), size=2, data=bib3_sub1) + labs(subtitle="With labels for high-JIF and follow-up empirical papers") + theme(legend.position = "None")   # text
+# 
+# gg + geom_label(aes(label=longID), size=2, data=bib3_sub1, alpha=0.25) + labs(subtitle="With labels for high-JIF and follow-up empirical papers") + theme(legend.position = "None")  # label
+
+# Plot text and label that REPELS eachother (using ggrepel pkg) ------------
+#gg + geom_text_repel(aes(label=longID), size=2, data=bib3_sub1) + labs(subtitle="WWith labels for high-JIF and follow-up empirical papers") + theme(legend.position = "None")   # text
+
+# Add labels
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=bib3_sub1) + labs(subtitle="With labels for high-JIF and follow-up empirical papers") + theme(legend.position = "None")   # label
+
+ggsave("plot_zebrafinch_citing_plot1.pdf")
+rm(gg) #clean up
+```
+
+```{r plot by year and TC ring labels, eval = TRUE}
+# Scale points by JIF (Journal Impact Factor)
+
+# table(is.na(bib2$JIF)) #46 missing - probably for book chapters etc. - remove:
+bib3 <- bib2 %>% filter(!is.na(bib2$JIF))
+
+# Filter required rows
+bib3_sub2 <- bib3 %>% filter(ring == "yes" | TC > 300, )
+
+# Basic plot
+gg <- ggplot(bib3, aes(x=PY, y=TC, size=JIF, alpha=0.1)) + 
+  geom_point(aes(col=ring)) +
+  theme_minimal() +
+  theme(legend.position="top") + 
+  guides(colour = FALSE, alpha = FALSE) + guides(size=guide_legend("Journal Impact Factor")) + 
+  labs(title="Impact", x="Publication Year", y="Total Citations", caption="Source: Scopus")
+
+# Add labels
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=bib3_sub2) + labs(subtitle="With labels for highly-cited and follow-up empirical papers") + theme(legend.position = "None")   # label
+
+ggsave("plot_zebrafinch_citing_plot2.pdf")
+rm(gg) #clean up
+```
+
+```{r save data and plots, eval = FALSE}
+save(bib2, revdata, file="./data/data_processed.RData")
+load("./data/data_processed.RData")
+```
+
+#### Initial analyses in bibliometrix
+
+```{r bibliometrix general, eval = FALSE}
+# Preliminary descriptive analysis 
+results <- biblioAnalysis(bib2, sep = ";")
+#summary(object = results, k = 20, pause = FALSE)
+
+# pdf(file = "bib_4descriptive.pdf", height = 8, width = 8, pointsize=10)
+# par(mfrow=c(2,2), mar = c(4,4,1,1))
+# plot(results, k = 20, pause=FALSE)
+# dev.off()
+
+#####################  Figure - CO-AUTHORS NETWORK  ####################################################
+#pdf(file="Figure_collaboration_network.pdf", width=8, height=8, pointsize=10)
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+M <- metaTagExtraction(bib2, Field = "CR_AU", sep = ";")
+NetMatrix <- biblioNetwork(M, analysis = "collaboration", network = "authors", sep = ";")
+net <- networkPlot(NetMatrix, n = 500, cluster="walktrap", Title = "", labelsize = 0.2, type = "fruchterman", size=TRUE, remove.multiple=TRUE)	
+#dev.off() #note, changing n alters the colurs and arrangements of the authors and clusters
+###################################################################################
+
+#####################  Figure - HISTORICAL CO-CITATION NETWORK  ####################################################
+#pdf(file="Figure_historical_network.pdf", width=8, height=8, pointsize=10)
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+M <- metaTagExtraction(bib, Field = "CR_AU", sep = ";")
+histResults <- histNetwork(M, min.citations = 10, sep = ";") # "n" (number of most cited references to select) picked manually, larger numbers give error
+histPlot(histResults, size=TRUE, arrowsize = 0.2) 
+#dev.off()
+###################################################################################
+
+### CITATIONS
+
+M <- metaTagExtraction(bib2, Field = "CR_AU", sep = ";")
+
+#co-ciation network
+NetMatrix <- biblioNetwork(M, analysis = "co-citation", network = "authors", sep = ";")
+#NetMatrix <- biblioNetwork(M, analysis = "co-citation", network = "references", sep = ";")
+net <- networkPlot(NetMatrix, n = 50, type = "kamada", Title = "Co-Citation", labelsize=0.5) #odd?
+
+## Bipartite network of the existing networkds
+# Co-Citation network of the existing studies
+CRnet <- cocMatrix(M, Field = "CR", sep = ".  ")
+net <- networkPlot(CRnet, n = 50, labelsize = 0.3, size=TRUE, weighted = TRUE)	
+##### Error in graph.adjacency.sparse(adjmatrix, mode = mode, weighted = weighted, : not a square matrix
+
+### BIBLIOGRAPHIC COUPLING
+NetMatrix <- biblioNetwork (M, analysis = "coupling", network = "references", sep = ";") #invalid dimnames?
+net <- networkPlot(NetMatrix, n = 100, cluster="walktrap", Title = "Bibliographic Coupling Network", label = FALSE, labelsize = 1, type = "kamada", size=TRUE, remove.multiple=TRUE)	
+# odd - too few connections 
+
+###################################################################################
+
+## THEMATIC MAP
+M <- metaTagExtraction(bib2, Field = "CR_AU", sep = ";")
+NetMatrix <- biblioNetwork(M, analysis = "co-occurrences", network = "keywords", sep = ";")
+S <- normalizeSimilarity(NetMatrix, type = "association")
+net <- networkPlot(S, n = 50, Title = "keyword co-occurrence network", type="fruchterman", labelsize = 0.8, halo = TRUE, cluster = "walktrap",remove.isolates=FALSE, remove.multiple=FALSE, noloops=TRUE, weighted=TRUE)
+
+#Conceptual structure
+#CS <- conceptualStructure(bib, field="AB", minDegree=5, k.max=5, stemming=FALSE, labelsize=10)	#too dense
+```
+
+#### Included papers by Nancy Burley
+
+```{r Burley, eval = TRUE}
+grep("BURLEY", bib2$AU, value=TRUE) #we have 14 papers that Burley co-authored, but one is mislabelled as Burley DN
+ #fix Burley DN to NT
+by_Burley <- bib2 %>% filter(bib2$AU %in% grep("BURLEY", bib2$AU, value=TRUE)) #14 full records (incl. 2 used as initial starting point)
+#cbind(by_Burley$AU, by_Burley$PY, by_Burley$TI, by_Burley$SO)
+#toadd: 6, 7, 11, 12 #(ZF with ring manipulations) #(original 13, 14)
+by_Burley_add <- by_Burley[c(6, 7, 11, 12),] #4 papers to be used to get additional relevant literature (+2 others known to be imporatant, but not captured here)
+#cbind(by_Burley_add$PY, by_Burley_add$TI)
+```
+
+We have captured 12 papers by Burley via papers citing initial 2 publications by Burley (1981, 1982).    
+However, a few other important papers by Burley are missing. We will add these and also the papers citing them to create a more comprehensive literature data set for bibliometric analyses.   
+
+NEXT: collect records of papers citing these 4 extra papers by Burley, the reference for the original 1981 paper and another 2 key papers by Burley (stored in Burley_3extra.bib):    
+ * Burley, N., 1981. Sex Ratio Manipulation and Selection for Attractiveness. Science, 211(4483), pp.721–722
+ * Sex‐ratio manipulation in color‐banded populations of zebra finches. N Burley - Evolution, 1986    
+ * The differential-allocation hypothesis: an experimental test. N Burley - The American Naturalist, 1988    
+
+
+### Literature (final data set)    
+
+#### Upload additional Scopus data set   
+The records are stored in zebrafinch_Scopus2.bib file - first we use bibliometrix and revtools function to load these into a data frame. We then merge this data frame with the journal citation records, deduplicate with the original data frame to get the trurly new records.  
+
+```{r load more biblio data , eval = TRUE}
+### 1 Load bib file with records from Scopus (2019/12/27) into bibliometrix package to add to a  data frame for anlayses:
+tmp1 <- readFiles("./data/Burley_3extra.bib")
+tmp2 <- readFiles("./data/zebrafinch_Scopus2.bib")
+# Convert to bibliometric data frames
+bibnew1 <- convert2df(tmp1, dbsource = "scopus", format = "bib")
+bibnew1$longID <- rownames(bibnew1) #add column with long paper ID made from rownames
+bibnew2 <- convert2df(tmp2, dbsource = "scopus", format = "bib")
+bibnew2$longID <- rownames(bibnew2) #add column with long paper ID made from rownames
+#dim(bibnew2) #618 - ok
+bibnew <- bind_rows(bibnew1, bibnew2) #merge the two new dataframes
+#length(unique(bibnew$TI)) #620 - we have 2 duplicated records again?
+#which(bibnew$TI == bibnew$TI[duplicated(bibnew$TI)]) #rows 101 and 105 are duplicated
+#bibnew[c(213, 216),] #same paper, different formatting, remove one with rownames=="TTH A, 2010, ARCH TIERZ"
+bibnew <- bibnew %>% filter(longID != "TTH A, 2010, ARCH TIERZ") #remove one of the duplicates
+bibnew$TI <- gsub("FINCHES TAENIOPYGIA GUTTATA) ", "FINCHES (TAENIOPYGIA GUTTATA) ", bibnew$TI) #fixing one title
+
+### 2. Load same bib file into revtools creating differentky formatted dat frame (will be used for manual screening/labeling):
+revdatanew1 <- read_bibliography("./data/Burley_3extra.bib")
+revdatanew2 <- read_bibliography("./data/zebrafinch_Scopus2.bib")
+revdatanew <- bind_rows(revdatanew1, revdatanew2) #merge the two new dataframes
+#length(unique(revdatanew$title)) #620 - we have 2 duplicated records again?
+#revdatanew$label
+#length(unique(revdatanew2$title)) #617
+#which(duplicated(revdatanew$title)) #row 217
+#which(revdatanew$title == revdatanew$title[duplicated(revdatanew$title)]) #rows 214 and 217
+#revdatanew[c(214, 217),] # same paper, different formatting, remove one with label==Tth2010328.1
+revdatanew <- revdatanew %>% filter(label != "Tth2010328.1") #remove one of the duplicates
+revdatanew$title <- gsub("  ", " ", revdatanew$title) #remove double space from one of the titles
+revdatanew$title <- gsub(" \\{taeniopygia guttata) ", " (taeniopygia guttata) ", revdatanew$title) #fixing one title
+
+#compare data frame created in revtools with data frame created in bibliometrix
+#length(intersect(tolower(revdatanew$title), tolower(bibnew$TI))) #620 - all matching titles (at lower case)
+#setdiff(tolower(revdatanew$title), tolower(bibnew$TI)) #0 mismatches
+#setdiff(tolower(bibnew$TI), tolower(revdatanew$title)) #0 mismatches
+
+#write.csv(revdatanew, "./data/Scopus_bibnew_as_df.csv", row.names = FALSE) #sve as Rdat, as csv messes up rows!
+```
+
+#### Incorporate journals IF   
+Adding data with journal impact factors (InCite Journal Citation Reports:  Selected JCR Year: 2018 Selected Editions: SCIE,SSCI Selected Category Scheme: WoS).   
+
+```{r journals again, eval = TRUE}
+#load journal data
+journals_data <- read_excel("./data/JournalHomeGrid.xlsx", na = "NA", skip = 2, col_types = c("numeric", "text", "numeric", "skip", "numeric", "numeric")) %>% mutate_if(is.character, as.factor)
+#names(journals_data)
+#remove unnecessary columns and rename the other
+#journals_data <- journals_data  %>% select(-"...4")
+journals_data <- journals_data  %>% rename(Journal_Name = "Full Journal Title", 
+                       Total_Cites = "Total Cites",
+                       JIF = "Journal Impact Factor",
+                       Eigenfactor_Score = "Eigenfactor Score"
+                       )
+journals_data <- mutate(journals_data, Journal_Name_lower = tolower(Journal_Name))
+#check journal names
+journals <- bibnew$SO #402
+journals_list <- unique(tolower(journals)) #130
+intersect(journals_list, journals_data$Journal_Name_lower) #85
+#setdiff(journals_list, journals_data$Journal_Name_lower) #50 unmatched, many books
+#fix journal names (Scopus = JCR):
+journals_data$Journal_Name_lower[grepl("ethology", journals_data$Journal_Name_lower)]
+journals_data$Journal_Name_lower <- gsub("proceedings of the royal society b-biological sciences", "proceedings of the royal society b: biological sciences", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("philosophical transactions of the royal society b-biological sciences", "philosophical transactions of the royal society b: biological sciences", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("trends in ecology & evolution", "trends in ecology & evolution"
+, journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("annual review of ecology evolution and systematics", "annual review of ecology and systematics", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("ethology ecology & evolution", "ethology ecology and evolution", journals_data$Journal_Name_lower, ignore.case = TRUE)
+journals_data$Journal_Name_lower <- gsub("emu-austral ornithology", "emu", journals_data$Journal_Name_lower, ignore.case = TRUE)
+
+#marge journal info into bibnew dataframe
+bibnew <- mutate(bibnew, Journal_Name_lower = tolower(SO))
+bibnew <- left_join(bibnew, journals_data, by = "Journal_Name_lower")
+#dim(bibnew) #631 - note some records were joined incorrectly (some duplicated data rows)!
+#table(duplicated(bibnew$TI))
+#bibnew <- distinct(bibnew, .keep_all = TRUE) #does not work
+length(unique(bibnew$TI)) #619
+#bibnew$TI[which(bibnew$TI %in% bibnew$TI[duplicated(bibnew$TI)])] #duplicated titles
+#View(bibnew[which(bibnew$TI %in% bibnew$TI[duplicated(bibnew$TI)]), ] ) #duplicated full records
+bibnew2 <- bibnew %>% filter(!duplicated(bibnew$TI))
+#dim(bibnew2) #619 ok
+write.csv(bibnew2, "./data/Scopus_bibnew_as_df.csv", row.names = FALSE)
+rm(journals_data) #clean up
+```
+
+#### Data clean-up: check author names for additional records  
+
+Note: Burley appears again both as "BURLEY N" and "BURLEY NT"! (similar issue for some other outhors)   
+```{r authors again, eval = TRUE}
+#check author names as strings
+authors <- bibnew2$AU #402 
+#extract individual authors of citing papers into a vector of names
+authors2 <- unlist(strsplit(authors, ";")) #these are authors in the reference lists!
+authors2 <- unique(authors2[order(authors2)]) #see which names need cleaning
+#write.csv(authors2, "./data/author_list_uncleaned_new.csv", row.names = FALSE)
+
+#grep("BURLEY", authors2, value=TRUE) #3 forms - needs fixing
+
+# We can do some cleaning where we suspect a mistake (especially author initials)
+corrected <- paste(bibnew2$AU, ";", sep="")
+corrected <- gsub("BURLEY N;", "BURLEY NT;", corrected, ignore.case = TRUE)
+corrected <- gsub("BURLEY DN;", "BURLEY NT;", corrected, ignore.case = TRUE)
+corrected <- gsub("CASPERS B;", "CASPERS BA;", corrected, ignore.case = TRUE)
+corrected <- gsub("ALONSO LVAREZ C;", "ALONSO ALVAREZ C;", corrected, ignore.case = TRUE)
+corrected <- gsub("CUTHILL I;", "CUTHILL IC;", corrected, ignore.case = TRUE)
+corrected <- gsub("JENNIONS M", "JENNIONS MD", corrected, ignore.case = TRUE)
+corrected <- gsub("TINBERGEN J;", "TINBERGEN JM;", corrected, ignore.case = TRUE)
+corrected <- gsub("ZANN R;", "ZANN RA;", corrected, ignore.case = TRUE)
+bibnew2$AU <- corrected #add corrections
+
+#write.csv(bibnew2, "Scopus_bibnew_as_df.csv", row.names = FALSE) #sve as Rdat, as csv messes up rows!
+```
+
+**Extended Data Table 2:**   
+List of 619 additional bibliographic records used in the analyses (from 6 more key papers by Burley published 1986-1996).    
+
+```{r scrollable table of 402 papers, include = FALSE, eval = FALSE}
+bibnew %>% select(AU, PY, TI, SO, VL, PP, DT) %>% kable("html") %>%
+    kable_styling("striped", position = "left") %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+#### Matching dataframes to locate new records (unscreened) records for labelling in revtools   
+
+```{r matching revdata, include = TRUE, eval = TRUE}
+#by title:
+#length(intersect(tolower(revdata$title), tolower(revdatanew$title))) #141 overlapping
+#length(setdiff(tolower(revdata$title), tolower(revdatanew$title))) #260 unique in revdata
+#length(setdiff(tolower(revdatanew$title), tolower(revdata$title))) #478 unique in revdatanew
+#create subset of new records to screen
+toscreen <- revdatanew %>% filter(tolower(revdatanew$title) %in% setdiff(tolower(revdatanew$title), tolower(revdata$title)))
+#dim(toscreen) #478
+#write.csv(toscreen, "./data/SCR_ABS_LAB_RES_toscreen_set2.csv", row.names = FALSE)
+```
+
+#### Coding contents of papers using Revtools - for the new records    
+Revtools has a screening tool which can be also used for adding lebels to records.   
+Manually screened records to mark these on birds and coloured ring preference/reproductionas (labelled as "included", with additional marks for zebrafinch "zf" and other birds "ob").     
+
+```{r screen and label in revtools again, eval = FALSE}
+scr_tit_res_set2 <- screen_titles(toscreen) # run revtools app with titles only - exported to zebrafinch_title_screening_res_set2.csv
+names(scr_tit_res_set2)
+table(scr_tit_res_set2$screened_titles) #67 not excluded
+scr_abs_set2 <- scr_tit_res_set2 %>% filter(screened_titles != "excluded") #filter out 62 abstracts that are not excluded for further screening
+scr_abs_res_set2 <- screen_abstracts(scr_abs_set2) # run revtools app with abstracts
+names(scr_abs_res_set2)
+table(scr_abs_res_set2$screened_abstracts) #4 selected
+scr_abs_lab_set2 <- scr_abs_res_set2 %>% filter(screened_abstracts != "excluded") #filter out 32 abstracts that are not excluded for manual labeling
+#View(scr_abs_lab_set2) #they are all on zebrafinch
+#dim(scr_abs_lab_set2)
+scr_abs_lab_set2$notes <- "ZF"
+write.csv(scr_abs_lab_set2, "./data/SCR_ABS_LAB_RES_set2.csv", row.names = FALSE)
+```
+
+```{r add screening labels from revtools, eval = TRUE}
+scr_abs_lab_res_set2 <- read.csv("./data/SCR_ABS_LAB_RES_set2.csv")
+#names(scr_abs_lab_res_set2)
+#table(scr_abs_lab_res_set2$notes) #ZF 4
+bibnew3 <- bibnew2 %>% mutate(ring = ifelse(tolower(bibnew2$TI) %in% tolower(scr_abs_lab_res_set2$title), "yes", "no"))
+#table(bibnew3$ring) # 4 yes, 615 no
+```
+
+```{r merge bib2 and binew3, eval = TRUE}
+bib4 <- bind_rows(bib2, bibnew3)
+#dim(bib4) #1021 41
+#table(bib4$ring) #36 "yes", but some ar not ring studies
+```
+
+With original and follow-up birds ring preference studies in blue and labels:
+
+```{r prepare for plotting, eval = FALSE}
+# table(is.na(bib4$JIF)) #107 missing JIF- probably for book chapters etc., including Burley 1981 (discontinued journal: "The Sciences was published from 1961 to 2001")
+#bib5 <- bib4 %>% mutate(JIF = replace(JIF, which(is.na(JIF)), 0)) #assign JIF=0 to all missing values, including Burley 1981
+
+bib5 <- bib4 %>% filter(!is.na(bib4$JIF)) #careful, this used to remove Burley 1981 before journal name was fixed
+
+grep("BURLEY", bib5$AU, value=TRUE) #we have 69 publications that Burley co-authored
+Burley <- bib5 %>% filter((bib5$AU %in% grep("BURLEY", bib5$AU, value=TRUE)))
+Burley_ring <- bib5 %>% filter((bib5$AU %in% grep("BURLEY", bib5$AU, value=TRUE)) & ring=="yes") 
+#Burley_ring #8 records of "ring" studies by Burley
+
+Nature_Science <- bib5 %>% filter(SO %in% c("NATURE", "SCIENCE"))
+#dim(Nature_Science) #16 papers
+Nature_Science_ring <- bib5 %>% filter(SO %in% c("NATURE", "SCIENCE") & ring=="yes")
+#dim(Nature_Science_ring) #3 papers
+
+highJIF <- bib5 %>% filter(JIF > 40)
+#dim(highJIF) #16 papers
+highJIF_ring <- bib5 %>% filter(JIF > 40 & ring=="yes")
+#dim(highJIF_ring) #3 papers
+
+highlycited <- bib5 %>% filter(TC > 200)
+#dim(highlycited) #30 papers
+highlycited_ring <- bib5 %>% filter(TC > 200 & ring=="yes")
+#dim(highlycited_ring) #3 papers
+```
+
+```{r plot by year and IF ring labels new, eval = FALSE}
+# scaling points by TC (total citations), blue color - empirical "colour ring" stdudies
+gg <- ggplot(bib5, aes(x = PY, y = JIF, size = TC, alpha = 0.1)) + 
+  geom_point(aes(col=ring)) + 
+  theme_minimal() +
+  theme(legend.position="bottom") + 
+  labs(title="A.", x="Publication Year", y="Journal Impact Factor", caption="Source: Scopus, Dec 2019")
+# add point labels
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=Burley_ring) + labs(subtitle="") + theme(legend.position = "bottom") 
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=highJIF) + labs(subtitle="") + theme(legend.position = "bottom")
+gg <- gg + guides(alpha = FALSE) + guides(size=guide_legend("Journal IF:"), colour = guide_legend("''ring'' papers:")) 
+gg
+
+ggsave("./plots/plot_zebrafinch_citing_plot_A.pdf", width = 14, height = 6, units = "in", dpi = 1800)
+rm(gg) #clean up
+```
+
+```{r plot by year and TC ring labels, eval = TRUE}
+# scaling points by JIF (Journal Impact Factor)
+gg <- ggplot(bib5, aes(x=PY, y=TC, size=JIF, alpha=0.1)) + 
+  geom_point(aes(col=ring)) +
+  theme_minimal() +
+  theme(legend.position="bottom") + 
+  labs(title="B.", x="Publication Year", y="Total Citations", caption="Source: Scopus, Dec 2019")
+
+# add point labels
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=Burley_ring) + labs(subtitle="") + theme(legend.position = "bottom") 
+gg <- gg + geom_label_repel(aes(label=longID), size=2, data=highlycited_ring) + labs(subtitle="") + theme(legend.position = "bottom")
+gg <- gg + guides(alpha = FALSE) + guides(size=guide_legend("Journal IF:"), colour = guide_legend("''ring'' papers:")) 
+gg
+
+ggsave("./plots/plot_zebrafinch_citing_plot_B.pdf", width = 14, height = 6, units = "in", dpi = 1800)
+rm(gg) #clean up
+```
+
+```{r save data and plots, eval = FALSE}
+save(bib4, bib5, revdatanew, file="./data/data_processed_new.RData")
+#load("./data/data_processed_new.RData")
+```
+
+#### Analyses in bibliometrix
+
+```{r bibliometrix general, eval = FALSE}
+# Preliminary descriptive analysis on 1022 documents - TODO: SUMMARY TABLE????
+results <- biblioAnalysis(bib5, sep = ";")
+#summary(object = results, k = 20, pause = FALSE)
+
+# pdf(file = "bib_4descriptive.pdf", height = 8, width = 8, pointsize=10)
+# par(mfrow=c(2,2), mar = c(4,4,1,1))
+# plot(results, k = 20, pause=FALSE)
+# dev.off()
+
+#####################  Figure - CO-AUTHORS NETWORK  ####################################################
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+M <- metaTagExtraction(bib5, Field = "CR_AU", sep = ";")
+NetMatrix <- biblioNetwork(M, analysis = "collaboration", network = "authors", sep = ";")
+#pdf(file="./plots/Figure_collaboration_network.pdf", width=10, height=8, pointsize=10, family="Bookman")
+net <- networkPlot(NetMatrix, n = 100, cluster="walktrap", Title = "", labelsize = 0.8, type = "fruchterman", size=TRUE, remove.multiple=TRUE, edgesize = 2)	
+#dev.off() #note, changing n alters the colurs and arrangements of the authors and clusters
+###################################################################################
+
+#####################  Figure - HISTORICAL CO-CITATION NETWORK  ####################################################
+par(mfrow=c(1,1), mar=c(0,0,0,0))
+M <- metaTagExtraction(bib, Field = "CR_AU", sep = ";")
+histResults <- histNetwork(M, min.citations = 5, sep = ";") # "n" (number of most cited references to select) picked manually, larger numbers give error
+#pdf(file="./plots/Figure_historical_co-citation_network.pdf", width=8, height=8, pointsize=10)
+histPlot(histResults, size=TRUE, arrowsize = 0.2) 
+#dev.off() #nte the automatic plot caption does not make sense
+###################################################################################
+
+### CITATIONS
+
+M <- metaTagExtraction(bib5, Field = "CR_AU", sep = ";")
+
+#co-ciation network
+NetMatrix <- biblioNetwork(M, analysis = "co-citation", network = "authors", sep = ";")
+#NetMatrix <- biblioNetwork(M, analysis = "co-citation", network = "references", sep = ";")
+net <- networkPlot(NetMatrix, n = 50, type = "kamada", Title = "Co-Citation", labelsize=0.5) #odd?
+
+## Bipartite network of the existing networkds
+# Co-Citation network of the existing studies
+CRnet <- cocMatrix(M, Field = "CR", sep = ".  ")
+net <- networkPlot(CRnet, n = 50, labelsize = 0.3, size=TRUE, weighted = TRUE)	
+##### Error in graph.adjacency.sparse(adjmatrix, mode = mode, weighted = weighted, : not a square matrix
+
+### BIBLIOGRAPHIC COUPLING
+NetMatrix <- biblioNetwork (M, analysis = "coupling", network = "references", sep = ";") #invalid dimnames?
+net <- networkPlot(NetMatrix, n = 100, cluster="walktrap", Title = "Bibliographic Coupling Network", label = FALSE, labelsize = 1, type = "kamada", size=TRUE, remove.multiple=TRUE)	
+# odd - too few connections 
+
+###################################################################################
+
+## THEMATIC MAP
+M <- metaTagExtraction(bib5, Field = "CR_AU", sep = ";")
+NetMatrix <- biblioNetwork(M, analysis = "co-occurrences", network = "keywords", sep = ";")
+S <- normalizeSimilarity(NetMatrix, type = "association")
+net <- networkPlot(S, n = 50, Title = "keyword co-occurrence network", type="fruchterman", labelsize = 0.8, halo = TRUE, cluster = "walktrap",remove.isolates=FALSE, remove.multiple=FALSE, noloops=TRUE, weighted=TRUE)
+
+#Conceptual structure
+CS <- conceptualStructure(bib5, field="AB", minDegree=5, k.max=5, stemming=FALSE, labelsize=10)	#too dense
+```
